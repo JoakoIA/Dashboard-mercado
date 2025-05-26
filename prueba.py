@@ -38,6 +38,6 @@ dropdown_style = {
 }
 
 # ————— Carga y preprocesamiento estático —————
-df = pd.read_excel(r'data\Mercado Farmaceutico Fresenius Cierre Abril 2025.xlsx', sheet_name='Data')
+df = pd.read_excel(r'data/Mercado Farmaceutico Fresenius Cierre Abril 2025.xlsx', sheet_name='Data')
 # ... resto de tu código ...
 print(df)
