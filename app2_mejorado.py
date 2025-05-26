@@ -479,5 +479,8 @@ def toggle(c):
     return 'filter-container hidden' if c and c%2 else 'filter-container visible'
 
 # ————— Run —————
+import os
 if __name__=='__main__':
-    app.run(debug=True, port=8050)
+    port = int(os.environ.get("PORT", 8050))
+    # En producción usa run_server; debug=True lo puedes dejar en False
+    app.run_server(host='0.0.0.0', port=port, debug=False)
