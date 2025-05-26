@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard de Ventas - Principios Activos</title>
+  <script src="https://unpkg.com/react@17/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@17/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+  <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: #f3f4f6; /* Tailwind bg-gray-100 */
+    }
+    .recharts-tooltip-wrapper {
+      outline: none !important;
+      border-radius: 0.375rem; /* rounded-md */
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); /* shadow-lg */
+    }
+    .recharts-default-legend {
+      margin-top: 10px !important;
+    }
+    .hospifarma-bar:hover {
+      stroke: #000; /* Borde negro al hacer hover */
+      stroke-width: 1.5;
+      opacity: 0.9;
+    }
+    .filter-select {
+      min-width: 200px; /* Ancho mínimo para selectores */
+    }
+    .error-message {
+        color: red;
+        text-align: center;
+        padding: 20px;
+        font-size: 1.2em;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+{% raw %}
+  <script type="text/babel">
+    console.log("Babel script started."); 
+
+    const { useState, useEffect, useMemo } = React;
+    const { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } = Recharts;
+
+    // Color especial para HOSPIFARMA
+    const HOSPIFARMA_COLOR = '#1f77b4'; 
+    // Paleta de colores para otros proveedores
+    const OTHER_PROVIDER_COLORS = ['#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'];
+
+    // Componente de Tooltip Personalizado
+    const CustomTooltip = ({ active, payload, label, dataKeyType }) => {
+      if (active && payload && payload.length) {
+        const totalForStack = payload.reduce((sum, entry) => sum + (Number(entry.value) || 0), 0);
+        return (
+          <div className="bg-white p-3 border border-gray-300 rounded shadow-lg">
+            <p className="font-semibold text-gray-700">{`Año: ${label}`}</p>
+            {payload.map((entry, index) => {
+              const numericValue = Number(entry.value) || 0;
+              const marketShare = totalForStack > 0 ? ((numericValue / totalForStack) * 100).toFixed(1) : 0;
+              const valueFormatted = dataKeyType === 'ventas' 
+                ? `$${numericValue.toLocaleString('es-CL')}` 
+                : `${numericValue.toLocaleString('es-CL')} unidades`;
+              const providerName = entry.name.replace(/_unidades|_ventas$/, '');
+              return (
+                <div key={`item-${index}`} style={{ color: entry.color }} className="text-sm my-1">
+                  <span>{providerName}: </span>
+                  <span className="font-medium">{valueFormatted}</span>
+                  <span className="text-xs text-gray-600"> ({marketShare}%)</span>
+                </div>
+              );
+            })}
+          </div>
+        );
+      }
+      return null;
+    };
+
+    // Componente principal de la Aplicación
+    function App() {
+      console.log("App component rendering/mounting."); 
+
+      const [initialLoading, setInitialLoading] = useState(true); // For fetching data initially
+      const [processing, setProcessing] = useState(false); // For filtering/recalculating charts
+      const [rawData, setRawData] = useState([]); // Stores data fetched from backend
+      const [errorMessage, setErrorMessage] = useState(''); // For displaying errors
+
+      const [selectedPrincipioActivo, setSelectedPrincipioActivo] = useState('Todos');
+      const [selectedOrganismo, setSelectedOrganismo] = useState('Todos');
+      
+      // Fetch data from Flask backend when component mounts
+      useEffect(() => {
+        console.log("Fetching initial data from /data");
+        fetch('/data')
+          .then(response => {
+            if (!response.ok) {
+              throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return response.json();
+          })
+          .then(data => {
+            if (data.error) {
+                console.error("Error from backend:", data.error);
+                setErrorMessage(`Error al cargar datos: ${data.error}. Revise la consola del servidor Flask.`);
+                setRawData([]);
+            } else {
+                console.log("Data fetched successfully:", data);
+                setRawData(data);
+                setErrorMessage(''); // Clear any previous error
+            }
+          })
+          .catch(error => {
+            console.error("Error fetching data:", error);
+            setErrorMessage(`No se pudo conectar al servidor o procesar los datos: ${error.message}. Asegúrese que el servidor Flask esté corriendo y el archivo Excel sea accesible.`);
+            setRawData([]);
+          })
+          .finally(() => {
+            setInitialLoading(false);
+          });
+      }, []); // Empty dependency array means this runs once on mount
+
+      // Memoized selectors based on rawData
+      const principiosActivos = useMemo(() => {
+        if (!rawData || rawData.length === 0) return ['Todos'];
+        return ['Todos', ...new Set(rawData.map(item => item.principioActivo).filter(Boolean))];
+      }, [rawData]);      const organismos = useMemo(() => {
+        if (!rawData || rawData.length === 0) return ['Todos'];
+        
+        // Si hay un principio activo seleccionado diferente a 'Todos',
+        // filtramos los organismos disponibles para ese principio activo
+        if (selectedPrincipioActivo !== 'Todos') {
+          const filteredData = rawData.filter(item => item.principioActivo === selectedPrincipioActivo);
+          return ['Todos', ...new Set(filteredData.map(item => item.organismo).filter(Boolean))];
+        }
+        
+        // De lo contrario, devolvemos todos los organismos
+        return ['Todos', ...new Set(rawData.map(item => item.organismo).filter(Boolean))];
+      }, [rawData, selectedPrincipioActivo]);
+      
+      const allProviders = useMemo(() => {
+        if (!rawData || rawData.length === 0) return ['HOSPIFARMA']; // Default if no data
+        const providers = new Set(rawData.map(item => item.proveedor).filter(Boolean));
+        if (!providers.has('HOSPIFARMA')) {
+            providers.add('HOSPIFARMA'); // Ensure HOSPIFARMA is always an option for color consistency
+        }
+        return Array.from(providers).sort((a, b) => {
+            if (a === 'HOSPIFARMA') return -1; // HOSPIFARMA first in list for legend consistency
+            if (b === 'HOSPIFARMA') return 1;
+            return a.localeCompare(b);
+        });
+      }, [rawData]);
+
+      const [processedData, setProcessedData] = useState([]);
+      const [providerKeys, setProviderKeys] = useState([]);
+
+      // Effect for processing data when filters or rawData change
+      useEffect(() => {
+        if (initialLoading || !rawData || rawData.length === 0) {
+            // Don't process if still loading initial data or if there's no data
+            if (!initialLoading && (!rawData || rawData.length === 0)) {
+                setProcessedData([]); // Clear charts if no raw data
+                setProviderKeys([]);
+            }
+            return;
+        }
+        
+        console.log("Processing data for charts. Filters:", { selectedPrincipioActivo, selectedOrganismo });
+        setProcessing(true);
+        const timerId = setTimeout(() => { // Simulating processing delay, can be removed
+          try {
+            let filtered = rawData;
+            if (selectedPrincipioActivo !== 'Todos') {
+              filtered = filtered.filter(item => item.principioActivo === selectedPrincipioActivo);
+            }
+            if (selectedOrganismo !== 'Todos') {
+              filtered = filtered.filter(item => item.organismo === selectedOrganismo);
+            }
+
+            const groupedByYear = filtered.reduce((acc, item) => {
+              const year = item.year || "Sin Año"; // Handle cases where year might be missing
+              acc[year] = acc[year] || {};
+              const proveedor = item.proveedor || "Desconocido";
+              acc[year][proveedor] = acc[year][proveedor] || { unidades: 0, ventas: 0 };
+              acc[year][proveedor].unidades += (Number(item.unidades) || 0);
+              acc[year][proveedor].ventas += (Number(item.ventas) || 0);
+              return acc;
+            }, {});
+            
+            const currentProvidersInView = new Set();
+            filtered.forEach(item => currentProvidersInView.add(item.proveedor || "Desconocido"));
+            
+            // Ensure HOSPIFARMA is included for consistent stacking order if it's a global provider
+            if (allProviders.includes('HOSPIFARMA') && !currentProvidersInView.has('HOSPIFARMA')) {
+               currentProvidersInView.add('HOSPIFARMA');
+            }
+            
+            // Sort providers for stacking: HOSPIFARMA last to be on top
+            const sortedUniqueProviders = Array.from(currentProvidersInView).sort((a, b) => {
+              if (a === 'HOSPIFARMA') return 1; 
+              if (b === 'HOSPIFARMA') return -1;
+              return a.localeCompare(b); 
+            });
+            setProviderKeys(sortedUniqueProviders);
+
+            const chartFormattedData = Object.keys(groupedByYear).map(year => {
+              const yearData = { name: String(year) }; 
+              sortedUniqueProviders.forEach(provider => {
+                yearData[`${provider}_unidades`] = groupedByYear[year][provider]?.unidades || 0;
+                yearData[`${provider}_ventas`] = groupedByYear[year][provider]?.ventas || 0;
+              });
+              return yearData;
+            }).sort((a,b) => { // Sort by year, handling "Sin Año"
+                if (a.name === "Sin Año") return 1;
+                if (b.name === "Sin Año") return -1;
+                // Ensure names are treated as numbers for sorting where possible
+                const aNum = parseInt(a.name);
+                const bNum = parseInt(b.name);
+                if (!isNaN(aNum) && !isNaN(bNum)) {
+                    return aNum - bNum;
+                }
+                return a.name.localeCompare(b.name); // Fallback to string compare
+            }); 
+
+            setProcessedData(chartFormattedData);
+            console.log("Data processing complete for charts.", { chartFormattedData, sortedUniqueProviders });
+          } catch (error) {
+            console.error("Error during data processing for charts:", error);
+            setErrorMessage("Error al procesar los datos para los gráficos.");
+          } finally {
+            setProcessing(false);
+          }
+        }, 100); // Short delay for visual feedback of processing
+
+        return () => clearTimeout(timerId);
+      }, [selectedPrincipioActivo, selectedOrganismo, rawData, allProviders, initialLoading]);
+      
+      const providerColors = useMemo(() => {
+        const colors = {};
+        let colorIdx = 0;
+        // Use allProviders (derived from rawData) to assign colors consistently
+        allProviders.forEach(p => {
+            if (p === 'HOSPIFARMA') {
+                colors[p] = HOSPIFARMA_COLOR;
+            } else {
+                colors[p] = OTHER_PROVIDER_COLORS[colorIdx % OTHER_PROVIDER_COLORS.length];
+                colorIdx++;
+            }
+        });
+        return colors;
+      }, [allProviders]);
+
+      const renderLegendText = (value, entry) => {
+        const { color } = entry;
+        const style = {
+            color: value === 'HOSPIFARMA' ? HOSPIFARMA_COLOR : color,
+            fontWeight: value === 'HOSPIFARMA' ? 'bold' : 'normal',
+            marginRight: '10px',
+            cursor: 'pointer'
+        };
+        return <span style={style}>{value}</span>;
+      };
+
+      const yAxisSalesFormatter = (value) => {
+        if (value >= 1000000) return `$${(value / 1000000).toFixed(0)}M`;
+        if (value >= 1000) return `$${(value / 1000).toFixed(0)}K`;
+        return `$${value.toLocaleString('es-CL')}`;
+      };
+      const yAxisUnitsFormatter = (value) => {
+        if (value >= 1000) return `${(value / 1000).toFixed(0)}K`;
+        return value.toLocaleString('es-CL');
+      };
+
+      if (initialLoading) {
+        return (
+          <div className="flex justify-center items-center h-screen">
+            <div className="text-xl font-semibold text-gray-700">Cargando datos iniciales...</div>
+          </div>
+        );
+      }
+      
+      if (errorMessage) {
+        return (
+          <div className="min-h-screen bg-gray-100 p-4">
+            <header className="bg-slate-800 text-white p-4 shadow-md mb-4">
+              <h1 className="text-2xl font-bold text-center md:text-left">Dashboard de Ventas y Unidades por Proveedor</h1>
+            </header>
+            <div className="error-message">
+                <p>{errorMessage}</p>
+                <p>Por favor, verifique la ruta del archivo Excel en `app.py` y que el servidor Flask esté funcionando correctamente.</p>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="min-h-screen bg-gray-100">          <header className="bg-slate-800 text-white p-4 shadow-md">
+            <h1 className="text-2xl font-bold text-center md:text-left">Dashboard de Ventas y Unidades por Proveedor</h1>
+          </header>
+
+          <div className="bg-white p-4 shadow-sm sticky top-0 z-10">
+            <div className="container mx-auto flex flex-wrap gap-4 justify-center md:justify-start items-center">
+              <div>
+                <label htmlFor="principioActivo" className="block text-sm font-medium text-gray-700 mr-2">Principio Activo:</label>                <select
+                  id="principioActivo"
+                  value={selectedPrincipioActivo}
+                  onChange={e => {
+                    setSelectedPrincipioActivo(e.target.value);
+                    setSelectedOrganismo('Todos'); // Resetear la selección de organismo
+                  }}
+                  disabled={processing || rawData.length === 0}
+                  className="filter-select mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm"
+                >
+                  {principiosActivos.map(pa => <option key={pa} value={pa}>{pa}</option>)}
+                </select>
+              </div>
+              <div>
+                <label htmlFor="organismo" className="block text-sm font-medium text-gray-700 mr-2">Organismo:</label>
+                <select
+                  id="organismo"
+                  value={selectedOrganismo}
+                  onChange={e => setSelectedOrganismo(e.target.value)}
+                  disabled={processing || rawData.length === 0}
+                  className="filter-select mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm"
+                >
+                  {organismos.map(org => <option key={org} value={org}>{org}</option>)}
+                </select>
+              </div>
+              {processing && <div className="text-sm text-gray-600">Actualizando gráficos...</div>}
+            </div>
+          </div>
+
+          <main className="p-2 md:p-6 container mx-auto">
+            {(!rawData || rawData.length === 0) && !initialLoading && !errorMessage ? (
+                 <div className="text-center py-10 text-gray-600">
+                    <p className="text-xl">No hay datos disponibles del archivo Excel.</p>
+                    <p>Verifique la configuración del servidor y el archivo de datos.</p>
+                 </div>
+            ) : processedData.length === 0 && !processing && !initialLoading && !errorMessage ? (
+                 <div className="text-center py-10 text-gray-600">
+                    <p className="text-xl">No hay datos para mostrar con los filtros seleccionados.</p>
+                    <p>Intente con otras opciones.</p>
+                 </div>
+            ) : (
+            <div className="grid grid-cols-1 gap-6">
+              <div className="bg-white p-4 rounded-lg shadow">
+                <h2 className="text-xl font-semibold text-gray-800 mb-4">Unidades por Proveedor</h2>
+                <ResponsiveContainer width="100%" height={400}>
+                  <BarChart data={processedData} margin={{ top: 5, right: 20, left: 30, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
+                    <XAxis dataKey="name" tick={{ fontSize: 12 }} />
+                    <YAxis tickFormatter={yAxisUnitsFormatter} tick={{ fontSize: 12 }} label={{ value: 'Unidades', angle: -90, position: 'insideLeft', offset: -20, style: {fontSize: '14px', fill: '#666'}}} />
+                    <Tooltip content={<CustomTooltip dataKeyType="unidades" />} cursor={{ fill: 'rgba(200, 200, 200, 0.1)' }}/>
+                    <Legend formatter={renderLegendText} />
+                    {providerKeys.map((provider) => (
+                      <Bar 
+                        key={`${provider}_unidades`} 
+                        dataKey={`${provider}_unidades`} 
+                        name={provider} 
+                        stackId="a" 
+                        fill={providerColors[provider] || '#CCCCCC'} 
+                        className={provider === 'HOSPIFARMA' ? 'hospifarma-bar' : ''}
+                      />
+                    ))}
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="bg-white p-4 rounded-lg shadow">
+                <h2 className="text-xl font-semibold text-gray-800 mb-4">Ventas por Proveedor (CLP)</h2>
+                <ResponsiveContainer width="100%" height={400}>
+                  <BarChart data={processedData} margin={{ top: 5, right: 20, left: 50, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0"/>
+                    <XAxis dataKey="name" tick={{ fontSize: 12 }} />
+                    <YAxis tickFormatter={yAxisSalesFormatter} tick={{ fontSize: 12 }} label={{ value: 'Ventas (CLP)', angle: -90, position: 'insideLeft', offset: -40, style: {fontSize: '14px', fill: '#666'}}} />
+                    <Tooltip content={<CustomTooltip dataKeyType="ventas" />} cursor={{ fill: 'rgba(200, 200, 200, 0.1)' }} />
+                    <Legend formatter={renderLegendText} />
+                     {providerKeys.map((provider) => (
+                      <Bar 
+                        key={`${provider}_ventas`} 
+                        dataKey={`${provider}_ventas`} 
+                        name={provider} 
+                        stackId="b" 
+                        fill={providerColors[provider] || '#CCCCCC'}
+                        className={provider === 'HOSPIFARMA' ? 'hospifarma-bar' : ''}
+                      />
+                    ))}
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            )}
+          </main>
+          
+          <footer className="text-center text-sm text-gray-500 py-8">
+            Dashboard Interactivo de Ventas - {new Date().getFullYear()}
+          </footer>
+        </div>
+      );
+    }
+    try {
+        ReactDOM.render(<App />, document.getElementById('root'));
+        console.log("ReactDOM.render called successfully."); 
+    } catch (e) {
+        console.error("Error rendering React app:", e); 
+        const rootDiv = document.getElementById('root');
+        if (rootDiv) {
+            rootDiv.innerHTML = '<div class="error-message"><h1>Error al cargar la aplicación React.</h1><p>Por favor, revise la consola del navegador (F12) para más detalles.</p></div>';
+        }
+    }
+  </script>
+{% endraw %}
+</body>
+</html>
