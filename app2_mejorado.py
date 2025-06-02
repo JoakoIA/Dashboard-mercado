@@ -42,13 +42,44 @@ for grp in df['Grupo Proveedor'].unique():
         idx += 1
 
 
-# Extrae meses del string "18 Meses" -> 18
-def extract_months(s):
-    m = re.search(r'(\d+)', str(s))
-    return int(m.group(1)) if m else 12
+# Convierte duración de contrato a meses con nueva lógica
+def convert_to_months(s):
+    if pd.isna(s) or str(s).strip() == '':
+        return 18  # Si está vacía, asumir 18 meses
+    
+    s = str(s).strip().lower()
+    
+    # Extraer número y unidad
+    match = re.search(r'(\d+)\s*(meses?|horas?|días?|dia|semanas?)', s)
+    if not match:
+        return 18  # Si no se puede extraer, asumir 18 meses
+    
+    valor = int(match.group(1))
+    unidad = match.group(2)
+    
+    # Convertir a meses según la unidad
+    if 'mes' in unidad:
+        meses = valor
+    elif 'hora' in unidad:
+        # Convertir horas a meses (asumiendo 30 días/mes, 24 horas/día = 720 horas/mes)
+        meses = max(1, round(valor / 720))
+    elif 'día' in unidad or 'dia' in unidad:
+        # Convertir días a meses (asumiendo 30 días/mes)
+        meses = max(1, round(valor / 30))
+    elif 'semana' in unidad:
+        # Convertir semanas a meses (asumiendo 4.33 semanas/mes)
+        meses = max(1, round(valor / 4.33))
+    else:
+        meses = 18  # Valor por defecto
+    
+    # Aplicar lógica de redondeo y límites
+    if meses < 1:
+        return 1  # Mínimo 1 mes
+    else:
+        return meses
 
 # ¡Aquí debe ir esta línea, antes de inicializar app o definir callbacks!
-df['Meses_Contrato'] = df['Duración de Contrato'].apply(extract_months)
+df['Meses_Contrato'] = df['Duración de Contrato'].apply(convert_to_months)
 
 MESES_ES = [
     "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
@@ -250,6 +281,22 @@ def process_data(active, orgs, concs, view, current):
     no_agg['MS']  = no_agg.apply(lambda r:100*r['Cantidad']/tot_cant_no[r[xcol]] if tot_cant_no[r[xcol]]>0 else 0, axis=1)
     no_agg['SMS'] = no_agg.apply(lambda r:100*r['Total']/tot_vent_no[r[xcol]]   if tot_vent_no[r[xcol]]>0 else 0, axis=1)
 
+    # — agrupación SOLO CENABAST —
+    dff_only = dff[ dff['Organismo'].str.contains('CENABAST', case=False, na=False) ]
+    only_agg = (
+      dff_only.groupby([xcol,'Grupo Proveedor'])[['Cantidad','Total']]
+         .sum()
+         .reset_index()
+    )
+    if not only_agg.empty:
+        tot_cant_only = only_agg.groupby(xcol)['Cantidad'].sum().to_dict()
+        tot_vent_only = only_agg.groupby(xcol)['Total'].sum().to_dict()
+        only_agg['MS']  = only_agg.apply(lambda r:100*r['Cantidad']/tot_cant_only[r[xcol]] if tot_cant_only[r[xcol]]>0 else 0, axis=1)
+        only_agg['SMS'] = only_agg.apply(lambda r:100*r['Total']/tot_vent_only[r[xcol]]   if tot_vent_only[r[xcol]]>0 else 0, axis=1)
+    else:
+        # Si no hay datos de CENABAST, crear DataFrame vacío con las columnas necesarias
+        only_agg = pd.DataFrame(columns=[xcol, 'Grupo Proveedor', 'Cantidad', 'Total', 'MS', 'SMS'])
+
     # — si es mensual, traducir labels a español —
     orders = sorted(agg[xcol].unique().tolist())
     labels = orders
@@ -263,18 +310,24 @@ def process_data(active, orgs, concs, view, current):
         # para usar directamente los labels en lugar de las keys:
         agg['Label']   = agg[xcol].apply(lambda p: labels[orders.index(p)])
         no_agg['Label']= no_agg[xcol].apply(lambda p: labels[orders.index(p)])
+        if not only_agg.empty:
+            only_agg['Label']= only_agg[xcol].apply(lambda p: labels[orders.index(p)] if p in orders else p)
         xcol = 'Label'
 
     agg['Cantidad'] = agg['Cantidad'].round().astype(int)
     agg['Total']    = agg['Total'].round().astype(int)
     no_agg['Cantidad'] = no_agg['Cantidad'].round().astype(int)
     no_agg['Total']    = no_agg['Total'].round().astype(int)
+    if not only_agg.empty:
+        only_agg['Cantidad'] = only_agg['Cantidad'].round().astype(int)
+        only_agg['Total']    = only_agg['Total'].round().astype(int)
 
 
     # — preparar output —
     return {
         'agg'   : agg.to_dict('records'),
         'no'    : no_agg.to_dict('records'),
+        'only'  : only_agg.to_dict('records'),
         'xcol'  : xcol,
         'view'  : view,
         'orders': labels
@@ -329,6 +382,7 @@ def render_graphs(data, charts, cenabast):
     # 1) Extraemos todo lo que necesitamos del dict 'data'
     dfagg = pd.DataFrame(data['agg'])
     dfno  = pd.DataFrame(data['no'])
+    dfonly = pd.DataFrame(data['only']) if data.get('only') else pd.DataFrame()
     xcol   = data['xcol']
     orders = data['orders']    # ← ahora 'orders' existe
     view   = data['view']      # ← ahora 'view' existe
@@ -369,28 +423,57 @@ def render_graphs(data, charts, cenabast):
             figs.append(make_bar(dfagg, 'Cantidad', 'MS', 'Unidades por Grupo', 'units-chart'))
         if cenabast in ['without','both']:
             figs.append(make_bar(dfno,  'Cantidad', 'MS', "Unidades sin CENABAST", 'units-chart-no-cenabast'))
+        if cenabast == 'only' and not dfonly.empty:
+            figs.append(make_bar(dfonly, 'Cantidad', 'MS', "Unidades solo CENABAST", 'units-chart-only-cenabast'))
     if 'sales' in charts:
         if cenabast in ['with','both']:
             figs.append(make_bar(dfagg, 'Total', 'SMS', 'Ventas por Grupo', 'sales-chart'))
         if cenabast in ['without','both']:
             figs.append(make_bar(dfno,  'Total', 'SMS', "Ventas sin CENABAST", 'sales-chart-no-cenabast'))
+        if cenabast == 'only' and not dfonly.empty:
+            figs.append(make_bar(dfonly, 'Total', 'SMS', "Ventas solo CENABAST", 'sales-chart-only-cenabast'))
     if 'price' in charts:
-        dfno['Precio'] = dfno['Total'] / dfno['Cantidad']
-        hover = f"%{{x}}<br>Precio: $%{{y:,.2f}}<extra></extra>"
-        fig = go.Figure()
-        for grp in dfno['Grupo Proveedor'].unique():
-            sub = dfno[dfno['Grupo Proveedor']==grp]
-            fig.add_trace(go.Scatter(
-                x=sub[xcol], y=sub['Precio'], mode='lines+markers',
-                name=grp, line=dict(color=color_map.get(grp)), marker=dict(size=6)
-            ))
-        fig.update_traces(hovertemplate=hover)
-        fig.update_layout(title='Tendencia Precio Promedio', margin=dict(l=20, r=20, t=30, b=20))
-        figs.append(dcc.Graph(
-            id = 'price-chart',
-            figure=fig,
-            config={'modeBarButtonsToAdd':['toImage'], 'displaylogo':False}
-        ))
+        if cenabast in ['with','both']:
+            dfagg['Precio'] = dfagg['Total'] / dfagg['Cantidad']
+            hover = f"%{{x}}<br>Precio: $%{{y:,.2f}}<extra></extra>"
+            fig = go.Figure()
+            for grp in dfagg['Grupo Proveedor'].unique():
+                sub = dfagg[dfagg['Grupo Proveedor']==grp]
+                fig.add_trace(go.Scatter(
+                    x=sub[xcol], y=sub['Precio'], mode='lines+markers',
+                    name=grp, line=dict(color=color_map.get(grp)), marker=dict(size=6)
+                ))
+            fig.update_traces(hovertemplate=hover)
+            fig.update_layout(title='Tendencia Precio Promedio', margin=dict(l=20, r=20, t=30, b=20))
+            figs.append(dcc.Graph(figure=fig, config={'modeBarButtonsToAdd':['toImage'],'displaylogo':False}))
+        
+        if cenabast in ['without','both']:
+            dfno['Precio'] = dfno['Total'] / dfno['Cantidad']
+            hover = f"%{{x}}<br>Precio: $%{{y:,.2f}}<extra></extra>"
+            fig = go.Figure()
+            for grp in dfno['Grupo Proveedor'].unique():
+                sub = dfno[dfno['Grupo Proveedor']==grp]
+                fig.add_trace(go.Scatter(
+                    x=sub[xcol], y=sub['Precio'], mode='lines+markers',
+                    name=grp, line=dict(color=color_map.get(grp)), marker=dict(size=6)
+                ))
+            fig.update_traces(hovertemplate=hover)
+            fig.update_layout(title='Tendencia Precio Promedio sin CENABAST', margin=dict(l=20, r=20, t=30, b=20))
+            figs.append(dcc.Graph(figure=fig, config={'modeBarButtonsToAdd':['toImage'],'displaylogo':False}))
+        
+        if cenabast == 'only' and not dfonly.empty:
+            dfonly['Precio'] = dfonly['Total'] / dfonly['Cantidad']
+            hover = f"%{{x}}<br>Precio: $%{{y:,.2f}}<extra></extra>"
+            fig = go.Figure()
+            for grp in dfonly['Grupo Proveedor'].unique():
+                sub = dfonly[dfonly['Grupo Proveedor']==grp]
+                fig.add_trace(go.Scatter(
+                    x=sub[xcol], y=sub['Precio'], mode='lines+markers',
+                    name=grp, line=dict(color=color_map.get(grp)), marker=dict(size=6)
+                ))
+            fig.update_traces(hovertemplate=hover)
+            fig.update_layout(title='Tendencia Precio Promedio solo CENABAST', margin=dict(l=20, r=20, t=30, b=20))
+            figs.append(dcc.Graph(figure=fig, config={'modeBarButtonsToAdd':['toImage'],'displaylogo':False}))
 
     return figs
 
@@ -400,13 +483,25 @@ def render_graphs(data, charts, cenabast):
     State('units-chart', 'figure')
 )
 def update_units_annotations(restyle, existing_fig):
+    if not existing_fig or not existing_fig.get('data') or len(existing_fig['data']) == 0:
+        return existing_fig
+    
     fig = go.Figure(existing_fig)
+    
+    # Verificar que el primer trace tenga datos x válidos
+    if not fig.data[0].x or len(fig.data[0].x) == 0:
+        return existing_fig
+    
     x_vals = list(fig.data[0].x)
 
     # inicializamos totales a 0
     totals = [0]*len(x_vals)
     for trace in fig.data:
         if trace.visible is None or trace.visible:
+            # Verificar que trace.y existe y tiene la misma longitud que x_vals
+            if not trace.y or len(trace.y) != len(x_vals):
+                continue
+                
             # convertimos cada punto y a float antes de sumar
             new_totals = []
             for t, y in zip(totals, trace.y):
@@ -439,12 +534,24 @@ def update_units_annotations(restyle, existing_fig):
     State('sales-chart','figure')
 )
 def update_sales_annotations(restyle, existing_fig):
+    if not existing_fig or not existing_fig.get('data') or len(existing_fig['data']) == 0:
+        return existing_fig
+    
     fig = go.Figure(existing_fig)
+    
+    # Verificar que el primer trace tenga datos x válidos
+    if not fig.data[0].x or len(fig.data[0].x) == 0:
+        return existing_fig
+        
     x_vals = list(fig.data[0].x)
 
     totals = [0]*len(x_vals)
     for trace in fig.data:
         if trace.visible is None or trace.visible:
+            # Verificar que trace.y existe y tiene la misma longitud que x_vals
+            if not trace.y or len(trace.y) != len(x_vals):
+                continue
+                
             new_totals = []
             for t, y in zip(totals, trace.y):
                 try:
