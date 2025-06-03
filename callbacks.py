@@ -61,9 +61,7 @@ def register_callbacks(app, data_processor):
         opciones_concentracion = [{'label': c, 'value': c} for c in sorted(df_base['concentracion'].dropna().unique())]
         opciones_grupo = [{'label': g, 'value': g} for g in sorted(df_base['grupo_proveedor'].dropna().unique())]
         
-        return opciones_principio, opciones_organismo, opciones_concentracion, opciones_grupo
-
-    # Callback para filtros dinámicos interdependientes (sin ciclos)
+        return opciones_principio, opciones_organismo, opciones_concentracion, opciones_grupo    # Callback para filtros dinámicos interdependientes (sin ciclos)
     @app.callback(
         [Output('filtro-organismo', 'options', allow_duplicate=True),
          Output('filtro-concentracion', 'options', allow_duplicate=True),
@@ -74,22 +72,21 @@ def register_callbacks(app, data_processor):
         prevent_initial_call=True
     )
     def actualizar_filtros_por_principio(principios, cenabast, opciones):
-        """Actualiza dinámicamente las opciones de los filtros basado en las selecciones actuales"""
+        """Actualiza opciones de filtros basado en principio activo seleccionado"""
         
         df = data_processor.df
         
         if df is None or len(df) == 0:
-            return [], [], [], []
+            return [], [], []
         
-        # Aplicar filtros parciales para obtener datos disponibles
+        # Aplicar filtros base
         df_base = df.copy()
         
-        # Aplicar filtro CENABAST primero
+        # Aplicar filtro CENABAST
         if cenabast == 'sin':
             df_base = df_base[df_base['es_cenabast'] == False]
         elif cenabast == 'solo':
             df_base = df_base[df_base['es_cenabast'] == True]
-        # 'con' y 'ambos' no filtran nada
         
         # Aplicar opciones adicionales
         if opciones and 'truncar_mes' in opciones:
@@ -100,35 +97,16 @@ def register_callbacks(app, data_processor):
                 ((df_base['año'] < año_actual) | (df_base['mes'] <= mes_actual))
             ]
         
-        # Determinar qué filtro disparó el callback para preservar su valor
-        ctx = callback_context
-        triggers = ctx.triggered or []
-        if len(triggers) > 0:
-            trigger_id = triggers[0]['prop_id'].split('.')[0]
-        else:
-            trigger_id = None
-
-        
-        # Aplicar filtros existentes (excepto el que está siendo actualizado)
-        if trigger_id != 'filtro-principio-activo' and principios:
+        # Aplicar filtro de principio activo si está seleccionado
+        if principios:
             df_base = df_base[df_base['principio_activo'].isin(principios)]
         
-        if trigger_id != 'filtro-organismo' and organismos:
-            df_base = df_base[df_base['organismo'].isin(organismos)]
-        
-        if trigger_id != 'filtro-concentracion' and concentraciones:
-            df_base = df_base[df_base['concentracion'].isin(concentraciones)]
-        
-        if trigger_id != 'filtro-grupo-proveedor' and grupos:
-            df_base = df_base[df_base['grupo_proveedor'].isin(grupos)]
-        
-        # Generar opciones dinámicas para cada filtro
-        opciones_principio = [{'label': p, 'value': p} for p in sorted(df_base['principio_activo'].dropna().unique())]
+        # Generar opciones filtradas
         opciones_organismo = [{'label': o, 'value': o} for o in sorted(df_base['organismo'].dropna().unique())]
         opciones_concentracion = [{'label': c, 'value': c} for c in sorted(df_base['concentracion'].dropna().unique())]
         opciones_grupo = [{'label': g, 'value': g} for g in sorted(df_base['grupo_proveedor'].dropna().unique())]
         
-        return opciones_principio, opciones_organismo, opciones_concentracion, opciones_grupo
+        return opciones_organismo, opciones_concentracion, opciones_grupo
 
     # Callback para el toggle del sidebar
     @app.callback(
