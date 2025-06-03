@@ -109,7 +109,9 @@ app.layout = html.Div([
                 dcc.Dropdown(
                     id='act-dropdown',
                     options=[{'label':x,'value':x} for x in sorted(df['Principio Activo'].unique())],
-                    value=sorted(df['Principio Activo'].unique())[0],
+                    value=[sorted(df['Principio Activo'].unique())[0]],
+                    multi=True,
+                    placeholder='Seleccionar principios activos',
                     clearable=False, style=dropdown_style
                 ),
                 html.Br(),
@@ -142,6 +144,7 @@ app.layout = html.Div([
                     options=[
                         {'label':'Con','value':'with'},
                         {'label':'Sin','value':'without'},
+                        {'label':'Solo CENABAST','value':'only'},
                         {'label':'Ambos','value':'both'}
                     ],
                     value='with'
@@ -169,12 +172,42 @@ app.layout = html.Div([
 
 # ————— Callbacks de filtros dependientes —————
 @app.callback(
+    Output('act-dropdown','options'),
+    Input('cenabast-filter','value')
+)
+def update_act_options(cenabast):
+    """Actualizar opciones de Principio Activo según filtro CENABAST"""
+    if cenabast == 'without':
+        df_filtered = df[~df['Organismo'].str.contains('CENABAST', case=False, na=False)]
+    elif cenabast == 'only':
+        df_filtered = df[df['Organismo'].str.contains('CENABAST', case=False, na=False)]
+    else:  # 'with' o 'both'
+        df_filtered = df
+    
+    options = [{'label':x,'value':x} for x in sorted(df_filtered['Principio Activo'].unique())]
+    return options
+
+@app.callback(
     Output('org-dropdown','options'),
     Output('org-dropdown','value'),
-    Input('act-dropdown','value')
+    Input('act-dropdown','value'),
+    Input('cenabast-filter','value')
 )
-def set_org_options(active):
-    df2 = df[df['Principio Activo']==active]
+def set_org_options(actives, cenabast):
+    """Actualizar opciones de Organismo según Principio Activo y filtro CENABAST"""
+    if not actives:
+        return [], []
+    
+    # Filtrar por principios activos seleccionados
+    df2 = df[df['Principio Activo'].isin(actives)]
+    
+    # Aplicar filtro CENABAST
+    if cenabast == 'without':
+        df2 = df2[~df2['Organismo'].str.contains('CENABAST', case=False, na=False)]
+    elif cenabast == 'only':
+        df2 = df2[df2['Organismo'].str.contains('CENABAST', case=False, na=False)]
+    # Para 'with' y 'both' no filtramos
+    
     opts = [{'label':o,'value':o} for o in sorted(df2['Organismo'].unique())]
     return opts, []
 
@@ -182,18 +215,31 @@ def set_org_options(active):
     Output('conc-dropdown','options'),
     Output('conc-dropdown','value'),
     Input('act-dropdown','value'),
-    Input('org-dropdown','value')
+    Input('org-dropdown','value'),
+    Input('cenabast-filter','value')
 )
-def set_conc_options(active, orgs):
-    # 1) Filtrar
-    df2 = df[df['Principio Activo'] == active]
+def set_conc_options(actives, orgs, cenabast):
+    """Actualizar opciones de Concentración según filtros seleccionados"""
+    if not actives:
+        return [], []
+    
+    # Filtrar por principios activos
+    df2 = df[df['Principio Activo'].isin(actives)]
+    
+    # Filtrar por organismos si están seleccionados
     if orgs:
         df2 = df2[df2['Organismo'].isin(orgs)]
-    # 2) Combinar y quedarnos sólo con únicos
+    
+    # Aplicar filtro CENABAST
+    if cenabast == 'without':
+        df2 = df2[~df2['Organismo'].str.contains('CENABAST', case=False, na=False)]
+    elif cenabast == 'only':
+        df2 = df2[df2['Organismo'].str.contains('CENABAST', case=False, na=False)]
+    
+    # Combinar forma y concentración
     combos = df2['Forma'].astype(str) + ' - ' + df2['Concentration'].astype(str)
     unique_combos = sorted(combos.unique())
     options = [{'label': c, 'value': c} for c in unique_combos]
-    # 3) Reiniciar selección
     return options, []
 
 # ————— Callbacks de datos procesados —————
@@ -205,39 +251,66 @@ def set_conc_options(active, orgs):
     Input('view-mode','value'),
     Input('current-only','value')
 )
-def process_data(active, orgs, concs, view, current):
+def process_data(actives, orgs, concs, view, current):
     t0 = time.time()
+    
+    # Validar que hay principios activos seleccionados
+    if not actives:
+        return {
+            'agg': [], 'no': [], 'only': [], 'xcol': 'Año de emision', 
+            'view': view, 'orders': [], 'filters_info': {}
+        }
+    
     # — filtros básicos —
-    dff = df[df['Principio Activo']==active].copy()
+    dff = df[df['Principio Activo'].isin(actives)].copy()
     if orgs:
         dff = dff[dff['Organismo'].isin(orgs)]
     if concs:
         dff['FC'] = dff['Forma'].astype(str)+' - '+dff['Concentration'].astype(str)
         dff = dff[dff['FC'].isin(concs)]
-    # anualize / mensualize
-    if view=='annual':
+    
+    # Guardar información de filtros para hover
+    filters_info = {
+        'principios_activos': ', '.join(actives),
+        'organismos': ', '.join(orgs) if orgs else 'Todos',
+        'concentraciones': ', '.join(concs) if concs else 'Todas'
+    }
+    
+    # Lógica para anual, mensual y mensualizado
+    if view == 'annual':
+        # Anualizar: convertir todo a base anual
         factor = 12/dff['Meses_Contrato']
-        mask = dff['Meses_Contrato']!=12
-        dff.loc[mask,'Cantidad'] *= factor[mask]
-        dff.loc[mask,'Total']    *= factor[mask]
-    else:
-        records=[]
-        for _,row in dff.iterrows():
+        mask = dff['Meses_Contrato'] != 12
+        dff.loc[mask, 'Cantidad'] *= factor[mask]
+        dff.loc[mask, 'Total'] *= factor[mask]
+    elif view == 'monthly':
+        # Mensual: mostrar valor total en el mes de licitación, sin distribuir
+        pass  # No necesitamos hacer nada, los datos ya están en el mes correcto
+    else:  # monthlyavg (mensualizado)
+        # Mensualizado: distribuir el valor total a lo largo de los meses del contrato
+        records = []
+        for _, row in dff.iterrows():
             m = int(row['Meses_Contrato'])
             for i in range(m):
                 r = row.copy()
-                if view=='monthlyavg':
-                    r['Cantidad'] = round(r['Cantidad']/m)
-                    r['Total']    =       r['Total']/m
+                # Dividir cantidad y total entre los meses del contrato
+                r['Cantidad'] = round(r['Cantidad'] / m)
+                r['Total'] = r['Total'] / m
+                
+                # Calcular nuevo año y mes
                 a = int(r['Año de emision'])
                 mes0 = int(r['N Mes de emision'])
-                new_mes = (mes0-1+i)%12+1
-                new_ano = a + (mes0-1+i)//12
-                r['Año de emision']=new_ano
-                r['N Mes de emision']=new_mes
+                new_mes = (mes0 - 1 + i) % 12 + 1
+                new_ano = a + (mes0 - 1 + i) // 12
+                r['Año de emision'] = new_ano
+                r['N Mes de emision'] = new_mes
                 records.append(r)
+        
         if records:
             dff = pd.DataFrame(records)
+        else:
+            # Si no hay registros después de la distribución mensual, crear DataFrame vacío
+            dff = pd.DataFrame(columns=dff.columns)
     # truncar
     if 'current' in current:
         now = datetime.datetime.now()
@@ -291,8 +364,26 @@ def process_data(active, orgs, concs, view, current):
     if not only_agg.empty:
         tot_cant_only = only_agg.groupby(xcol)['Cantidad'].sum().to_dict()
         tot_vent_only = only_agg.groupby(xcol)['Total'].sum().to_dict()
-        only_agg['MS']  = only_agg.apply(lambda r:100*r['Cantidad']/tot_cant_only[r[xcol]] if tot_cant_only[r[xcol]]>0 else 0, axis=1)
-        only_agg['SMS'] = only_agg.apply(lambda r:100*r['Total']/tot_vent_only[r[xcol]]   if tot_vent_only[r[xcol]]>0 else 0, axis=1)
+        
+        # Calcular MS (Market Share) de forma más robusta
+        ms_values = []
+        for _, row in only_agg.iterrows():
+            xcol_val = row[xcol]
+            if xcol_val in tot_cant_only and tot_cant_only[xcol_val] > 0:
+                ms_values.append(100 * row['Cantidad'] / tot_cant_only[xcol_val])
+            else:
+                ms_values.append(0)
+        only_agg['MS'] = ms_values
+        
+        # Calcular SMS (Sales Market Share) de forma más robusta
+        sms_values = []
+        for _, row in only_agg.iterrows():
+            xcol_val = row[xcol]
+            if xcol_val in tot_vent_only and tot_vent_only[xcol_val] > 0:
+                sms_values.append(100 * row['Total'] / tot_vent_only[xcol_val])
+            else:
+                sms_values.append(0)
+        only_agg['SMS'] = sms_values
     else:
         # Si no hay datos de CENABAST, crear DataFrame vacío con las columnas necesarias
         only_agg = pd.DataFrame(columns=[xcol, 'Grupo Proveedor', 'Cantidad', 'Total', 'MS', 'SMS'])
@@ -330,7 +421,8 @@ def process_data(active, orgs, concs, view, current):
         'only'  : only_agg.to_dict('records'),
         'xcol'  : xcol,
         'view'  : view,
-        'orders': labels
+        'orders': labels,
+        'filters_info': filters_info
     }
 
 def annotate_totals(fig, is_sales=False):
@@ -386,23 +478,72 @@ def render_graphs(data, charts, cenabast):
     xcol   = data['xcol']
     orders = data['orders']    # ← ahora 'orders' existe
     view   = data['view']      # ← ahora 'view' existe
+    filters_info = data.get('filters_info', {})
 
     figs = []
 
+    # Función para calcular totales por período
+    def calculate_totals(df_):
+        if df_.empty:
+            return {}
+        return df_.groupby(xcol)[['Cantidad', 'Total']].sum().to_dict('index')
+
     # 2) Helper que usa 'orders' y 'view' desde el closure
     def make_bar(df_, ycol, mscol, title, graph_id):
-        hover = (
-            f"%{{x}}<br>"
-            f"{ycol}: %{{y:,.0f}}<br>"                # y sin decimales, con separador de miles
-            f"Market Share: %{{customdata[1]:.1f}}%<extra></extra>"
-        )
-        #fig = annotate_totals(fig, is_sales=(ycol=='Total'))
+        if df_.empty:
+            return html.Div(f"No hay datos para {title}")
+        
+        # Calcular totales por período
+        totals_by_period = calculate_totals(df_)
+        
+        # Crear datos personalizados para el hover
+        custom_data_list = []
+        for _, row in df_.iterrows():
+            period_totals = totals_by_period.get(row[xcol], {'Cantidad': 0, 'Total': 0})
+            custom_data_list.append([
+                row['Grupo Proveedor'],
+                row[mscol],
+                filters_info.get('principios_activos', ''),
+                filters_info.get('organismos', ''),
+                filters_info.get('concentraciones', ''),
+                period_totals['Cantidad'],
+                period_totals['Total']
+            ])
+        
+        df_['custom_data'] = custom_data_list
+        
+        # Template de hover mejorado
+        if ycol == 'Total':
+            hover = (
+                f"<b>%{{x}}</b><br>"
+                f"Grupo: %{{customdata[0]}}<br>"
+                f"Ventas: $%{{y:,.0f}}<br>"
+                f"Market Share: %{{customdata[1]:.1f}}%<br>"
+                f"<b>Total período: $%{{customdata[6]:,.0f}}</b><br>"
+                f"<br><i>Filtros aplicados:</i><br>"
+                f"Principios: %{{customdata[2]}}<br>"
+                f"Organismos: %{{customdata[3]}}<br>"
+                f"Concentraciones: %{{customdata[4]}}<extra></extra>"
+            )
+        else:
+            hover = (
+                f"<b>%{{x}}</b><br>"
+                f"Grupo: %{{customdata[0]}}<br>"
+                f"Unidades: %{{y:,.0f}}<br>"
+                f"Market Share: %{{customdata[1]:.1f}}%<br>"
+                f"<b>Total período: %{{customdata[5]:,.0f}}</b><br>"
+                f"<br><i>Filtros aplicados:</i><br>"
+                f"Principios: %{{customdata[2]}}<br>"
+                f"Organismos: %{{customdata[3]}}<br>"
+                f"Concentraciones: %{{customdata[4]}}<extra></extra>"
+            )
+        
         fig = px.bar(
             df_, x=xcol, y=ycol, color='Grupo Proveedor',
             barmode='stack',
             category_orders={xcol: orders},
             color_discrete_map=color_map,
-            custom_data=['Grupo Proveedor', mscol],
+            custom_data='custom_data',
             title=title
         )
         fig.update_traces(hovertemplate=hover)
@@ -433,47 +574,80 @@ def render_graphs(data, charts, cenabast):
         if cenabast == 'only' and not dfonly.empty:
             figs.append(make_bar(dfonly, 'Total', 'SMS', "Ventas solo CENABAST", 'sales-chart-only-cenabast'))
     if 'price' in charts:
-        if cenabast in ['with','both']:
-            dfagg['Precio'] = dfagg['Total'] / dfagg['Cantidad']
-            hover = f"%{{x}}<br>Precio: $%{{y:,.2f}}<extra></extra>"
-            fig = go.Figure()
-            for grp in dfagg['Grupo Proveedor'].unique():
-                sub = dfagg[dfagg['Grupo Proveedor']==grp]
-                fig.add_trace(go.Scatter(
-                    x=sub[xcol], y=sub['Precio'], mode='lines+markers',
-                    name=grp, line=dict(color=color_map.get(grp)), marker=dict(size=6)
-                ))
-            fig.update_traces(hovertemplate=hover)
-            fig.update_layout(title='Tendencia Precio Promedio', margin=dict(l=20, r=20, t=30, b=20))
-            figs.append(dcc.Graph(figure=fig, config={'modeBarButtonsToAdd':['toImage'],'displaylogo':False}))
+        if cenabast in ['with','both'] and not dfagg.empty and 'Total' in dfagg.columns and 'Cantidad' in dfagg.columns:
+            # Verificar que no hay división por cero
+            dfagg_price = dfagg[dfagg['Cantidad'] > 0].copy()
+            if not dfagg_price.empty:
+                dfagg_price['Precio'] = dfagg_price['Total'] / dfagg_price['Cantidad']
+                hover = (
+                    f"<b>%{{x}}</b><br>"
+                    f"Grupo: %{{fullData.name}}<br>"
+                    f"Precio: $%{{y:,.2f}}<br>"
+                    f"<br><i>Filtros aplicados:</i><br>"
+                    f"Principios: {filters_info.get('principios_activos', '')}<br>"
+                    f"Organismos: {filters_info.get('organismos', '')}<br>"
+                    f"Concentraciones: {filters_info.get('concentraciones', '')}<extra></extra>"
+                )
+                fig = go.Figure()
+                for grp in dfagg_price['Grupo Proveedor'].unique():
+                    sub = dfagg_price[dfagg_price['Grupo Proveedor']==grp]
+                    fig.add_trace(go.Scatter(
+                        x=sub[xcol], y=sub['Precio'], mode='lines+markers',
+                        name=grp, line=dict(color=color_map.get(grp)), marker=dict(size=6),
+                        hovertemplate=hover
+                    ))
+                fig.update_layout(title='Tendencia Precio Promedio', margin=dict(l=20, r=20, t=30, b=20))
+                figs.append(dcc.Graph(figure=fig, config={'modeBarButtonsToAdd':['toImage'],'displaylogo':False}))
         
-        if cenabast in ['without','both']:
-            dfno['Precio'] = dfno['Total'] / dfno['Cantidad']
-            hover = f"%{{x}}<br>Precio: $%{{y:,.2f}}<extra></extra>"
-            fig = go.Figure()
-            for grp in dfno['Grupo Proveedor'].unique():
-                sub = dfno[dfno['Grupo Proveedor']==grp]
-                fig.add_trace(go.Scatter(
-                    x=sub[xcol], y=sub['Precio'], mode='lines+markers',
-                    name=grp, line=dict(color=color_map.get(grp)), marker=dict(size=6)
-                ))
-            fig.update_traces(hovertemplate=hover)
-            fig.update_layout(title='Tendencia Precio Promedio sin CENABAST', margin=dict(l=20, r=20, t=30, b=20))
-            figs.append(dcc.Graph(figure=fig, config={'modeBarButtonsToAdd':['toImage'],'displaylogo':False}))
+        if cenabast in ['without','both'] and not dfno.empty and 'Total' in dfno.columns and 'Cantidad' in dfno.columns:
+            # Verificar que no hay división por cero
+            dfno_price = dfno[dfno['Cantidad'] > 0].copy()
+            if not dfno_price.empty:
+                dfno_price['Precio'] = dfno_price['Total'] / dfno_price['Cantidad']
+                hover = (
+                    f"<b>%{{x}}</b><br>"
+                    f"Grupo: %{{fullData.name}}<br>"
+                    f"Precio: $%{{y:,.2f}}<br>"
+                    f"<br><i>Filtros aplicados:</i><br>"
+                    f"Principios: {filters_info.get('principios_activos', '')}<br>"
+                    f"Organismos: {filters_info.get('organismos', '')}<br>"
+                    f"Concentraciones: {filters_info.get('concentraciones', '')}<extra></extra>"
+                )
+                fig = go.Figure()
+                for grp in dfno_price['Grupo Proveedor'].unique():
+                    sub = dfno_price[dfno_price['Grupo Proveedor']==grp]
+                    fig.add_trace(go.Scatter(
+                        x=sub[xcol], y=sub['Precio'], mode='lines+markers',
+                        name=grp, line=dict(color=color_map.get(grp)), marker=dict(size=6),
+                        hovertemplate=hover
+                    ))
+                fig.update_layout(title='Tendencia Precio Promedio sin CENABAST', margin=dict(l=20, r=20, t=30, b=20))
+                figs.append(dcc.Graph(figure=fig, config={'modeBarButtonsToAdd':['toImage'],'displaylogo':False}))
         
-        if cenabast == 'only' and not dfonly.empty:
-            dfonly['Precio'] = dfonly['Total'] / dfonly['Cantidad']
-            hover = f"%{{x}}<br>Precio: $%{{y:,.2f}}<extra></extra>"
-            fig = go.Figure()
-            for grp in dfonly['Grupo Proveedor'].unique():
-                sub = dfonly[dfonly['Grupo Proveedor']==grp]
-                fig.add_trace(go.Scatter(
-                    x=sub[xcol], y=sub['Precio'], mode='lines+markers',
-                    name=grp, line=dict(color=color_map.get(grp)), marker=dict(size=6)
-                ))
-            fig.update_traces(hovertemplate=hover)
-            fig.update_layout(title='Tendencia Precio Promedio solo CENABAST', margin=dict(l=20, r=20, t=30, b=20))
-            figs.append(dcc.Graph(figure=fig, config={'modeBarButtonsToAdd':['toImage'],'displaylogo':False}))
+        if cenabast == 'only' and not dfonly.empty and 'Total' in dfonly.columns and 'Cantidad' in dfonly.columns:
+            # Verificar que no hay división por cero
+            dfonly_price = dfonly[dfonly['Cantidad'] > 0].copy()
+            if not dfonly_price.empty:
+                dfonly_price['Precio'] = dfonly_price['Total'] / dfonly_price['Cantidad']
+                hover = (
+                    f"<b>%{{x}}</b><br>"
+                    f"Grupo: %{{fullData.name}}<br>"
+                    f"Precio: $%{{y:,.2f}}<br>"
+                    f"<br><i>Filtros aplicados:</i><br>"
+                    f"Principios: {filters_info.get('principios_activos', '')}<br>"
+                    f"Organismos: {filters_info.get('organismos', '')}<br>"
+                    f"Concentraciones: {filters_info.get('concentraciones', '')}<extra></extra>"
+                )
+                fig = go.Figure()
+                for grp in dfonly_price['Grupo Proveedor'].unique():
+                    sub = dfonly_price[dfonly_price['Grupo Proveedor']==grp]
+                    fig.add_trace(go.Scatter(
+                        x=sub[xcol], y=sub['Precio'], mode='lines+markers',
+                        name=grp, line=dict(color=color_map.get(grp)), marker=dict(size=6),
+                        hovertemplate=hover
+                    ))
+                fig.update_layout(title='Tendencia Precio Promedio solo CENABAST', margin=dict(l=20, r=20, t=30, b=20))
+                figs.append(dcc.Graph(figure=fig, config={'modeBarButtonsToAdd':['toImage'],'displaylogo':False}))
 
     return figs
 
@@ -512,18 +686,18 @@ def update_units_annotations(restyle, existing_fig):
                 new_totals.append(t + y_val)
             totals = new_totals
 
-    # construimos las anotaciones
-    ann = [
-        dict(
-            x=x_vals[i],
-            y=int(totals[i]),
-            text=f"{int(totals[i]):,}",
-            showarrow=False,
-            yshift=10,
-            font=dict(size=11, color='black')
-        )
-        for i in range(len(x_vals))
-    ]
+    # construimos las anotaciones, pero solo para valores > 0
+    ann = []
+    for i in range(min(len(x_vals), len(totals))):
+        if totals[i] > 0:  # Solo mostrar anotaciones para valores mayores a 0
+            ann.append(dict(
+                x=x_vals[i],
+                y=int(totals[i]),
+                text=f"{int(totals[i]):,}",
+                showarrow=False,
+                yshift=10,
+                font=dict(size=11, color='black')
+            ))
     fig.update_layout(annotations=ann)
     return fig
 
@@ -561,17 +735,18 @@ def update_sales_annotations(restyle, existing_fig):
                 new_totals.append(t + y_val)
             totals = new_totals
 
-    ann = [
-        dict(
-            x=x_vals[i],
-            y=int(totals[i]),
-            text=f"${int(totals[i]):,}",
-            showarrow=False,
-            yshift=10,
-            font=dict(size=11, color='black')
-        )
-        for i in range(len(x_vals))
-    ]
+    # construimos las anotaciones, pero solo para valores > 0
+    ann = []
+    for i in range(min(len(x_vals), len(totals))):
+        if totals[i] > 0:  # Solo mostrar anotaciones para valores mayores a 0
+            ann.append(dict(
+                x=x_vals[i],
+                y=int(totals[i]),
+                text=f"${int(totals[i]):,}",
+                showarrow=False,
+                yshift=10,
+                font=dict(size=11, color='black')
+            ))
     fig.update_layout(annotations=ann)
     return fig
 
