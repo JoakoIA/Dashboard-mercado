@@ -10,6 +10,26 @@ Características principales:
 - 6 gráficos: 3 básicos + 3 separados por CENABAST cuando se selecciona "Con y Sin"
 """
 
+
+# Market Share
+# Revisar desvios
+# si es menor a 5% 
+
+# --------------------
+# Ventas
+# añadir resumen de ventas de moleculas, filtrado por linea (principio activo). Por unidades y ventas totales
+# Informacion por representantes 
+# Agregar proceso actual de forecast
+# para informacion de ventas agregar clave y usuario##################
+# --------------------
+
+# --------------------
+# KPIs (Pendiente)
+
+# --------------------
+
+
+
 import dash
 from dash import dcc, html, Input, Output, State, callback_context
 import plotly.graph_objects as go
@@ -80,9 +100,12 @@ def convertir_meses_espanol(df):
         # Ordenar por mes usando el mapeo español
         orden_meses_es = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
                          'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
-        df_resultado['mes_order'] = df_resultado.get('mes_nombre_es', df_resultado['mes_nombre']).map(
-            {mes: i for i, mes in enumerate(orden_meses_es)}
-        )
+        if 'mes_nombre_es' in df_resultado.columns:
+            serie_meses = df_resultado['mes_nombre_es']
+        else:
+            serie_meses = df_resultado['mes_nombre']
+        df_resultado['mes_order'] = serie_meses.map({mes: i for i, mes in enumerate(orden_meses_es)})
+
         
         # Si no se pudo mapear a español, usar orden original en inglés
         if df_resultado['mes_order'].isna().any():
@@ -801,7 +824,12 @@ def actualizar_filtros_dinamicos(principios, organismos, concentraciones, grupos
         ]
       # Determinar qué filtro disparó el callback para preservar su valor
     ctx = callback_context
-    trigger_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
+    triggers = ctx.triggered or []
+    if len(triggers) > 0:
+        trigger_id = triggers[0]['prop_id'].split('.')[0]
+    else:
+        trigger_id = None
+
     
     # Aplicar filtros existentes (excepto el que está siendo actualizado)
     if trigger_id != 'filtro-principio-activo' and principios:
@@ -1381,9 +1409,6 @@ def asignar_colores_proveedores(df, color_column):
     
     return color_map, color_sequence
 
-if __name__ == '__main__':
-    app.run(debug=True, port=8052, host='127.0.0.1')
-
 # Callback para limpiar valores de filtros que ya no están disponibles
 @app.callback(
     [Output('filtro-principio-activo', 'value'),
@@ -1416,3 +1441,8 @@ def limpiar_valores_filtros(opt_principio, opt_organismo, opt_concentracion, opt
     nuevos_grupos = [v for v in (val_grupo or []) if v in valores_disponibles_grupo]
     
     return nuevos_principios, nuevos_organismos, nuevas_concentraciones, nuevos_grupos
+
+
+if __name__ == '__main__':
+    app.run(debug=True, port=8052, host='0.0.0.0')
+

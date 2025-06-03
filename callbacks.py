@@ -20,20 +20,60 @@ from utils import (
 def register_callbacks(app, data_processor):
     """Registra todos los callbacks del dashboard"""
 
-    # Callback dinámico para actualizar filtros de forma reactiva
+    # Callback para inicializar opciones de filtros al cargar la página
     @app.callback(
         [Output('filtro-principio-activo', 'options'),
          Output('filtro-organismo', 'options'),
          Output('filtro-concentracion', 'options'),
          Output('filtro-grupo-proveedor', 'options')],
-        [Input('filtro-principio-activo', 'value'),
-         Input('filtro-organismo', 'value'),
-         Input('filtro-concentracion', 'value'),
-         Input('filtro-grupo-proveedor', 'value'),
-         Input('filtro-cenabast', 'value'),
+        [Input('filtro-cenabast', 'value'),
          Input('opciones-adicionales', 'value')]
     )
-    def actualizar_filtros_dinamicos(principios, organismos, concentraciones, grupos, cenabast, opciones):
+    def inicializar_opciones_filtros(cenabast, opciones):
+        """Inicializa las opciones de los filtros basado en filtros globales"""
+        
+        df = data_processor.df
+        
+        if df is None or len(df) == 0:
+            return [], [], [], []
+        
+        # Aplicar filtros globales
+        df_base = df.copy()
+        
+        # Aplicar filtro CENABAST
+        if cenabast == 'sin':
+            df_base = df_base[df_base['es_cenabast'] == False]
+        elif cenabast == 'solo':
+            df_base = df_base[df_base['es_cenabast'] == True]
+        
+        # Aplicar opciones adicionales
+        if opciones and 'truncar_mes' in opciones:
+            mes_actual = datetime.now().month
+            año_actual = datetime.now().year
+            df_base = df_base[
+                (df_base['año'] <= año_actual) & 
+                ((df_base['año'] < año_actual) | (df_base['mes'] <= mes_actual))
+            ]
+        
+        # Generar opciones para todos los filtros
+        opciones_principio = [{'label': p, 'value': p} for p in sorted(df_base['principio_activo'].dropna().unique())]
+        opciones_organismo = [{'label': o, 'value': o} for o in sorted(df_base['organismo'].dropna().unique())]
+        opciones_concentracion = [{'label': c, 'value': c} for c in sorted(df_base['concentracion'].dropna().unique())]
+        opciones_grupo = [{'label': g, 'value': g} for g in sorted(df_base['grupo_proveedor'].dropna().unique())]
+        
+        return opciones_principio, opciones_organismo, opciones_concentracion, opciones_grupo
+
+    # Callback para filtros dinámicos interdependientes (sin ciclos)
+    @app.callback(
+        [Output('filtro-organismo', 'options', allow_duplicate=True),
+         Output('filtro-concentracion', 'options', allow_duplicate=True),
+         Output('filtro-grupo-proveedor', 'options', allow_duplicate=True)],
+        [Input('filtro-principio-activo', 'value')],
+        [State('filtro-cenabast', 'value'),
+         State('opciones-adicionales', 'value')],
+        prevent_initial_call=True
+    )
+    def actualizar_filtros_por_principio(principios, cenabast, opciones):
         """Actualiza dinámicamente las opciones de los filtros basado en las selecciones actuales"""
         
         df = data_processor.df
